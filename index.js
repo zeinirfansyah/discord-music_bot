@@ -1,73 +1,75 @@
-const { Client, GatewayIntentBits } = require("discord.js")
-const ytdl = require("ytdl-core"); //Use this if you wanna play youtube links!
-//Example:  createAudioResource(ytdl("https://youtu.be/JNl1_hRwpXE", { highWaterMark: 1024* 1024* 64,quality: "highestaudio"}), { inlineVoluem: true})
-const { joinVoiceChannel, createAudioPlayer, createAudioResource } = require("@discordjs/voice");
-//WE ALSO NEED:    npm i  libsodium-wrappers    and    npm i @discordjs/opus    for playing audio!
+const { Collection, Client, Intents } = require("discord.js");
+
+const dotenv = require("dotenv");
+const { REST } = require("@discordjs/rest");
+const { Routes } = require("discord-api-types/v9");
+const fs = require("fs");
+const { Player } = require("discord-player");
+
+dotenv.config();
+const TOKEN = process.env.TOKEN;
+
+const LOAD_SLASH = process.argv[2] == "load";
+
+const CLIENT_ID = process.env.CLIENT_ID;
+const GUILD_ID = process.env.GUILD_ID;
+
 const client = new Client({
-    shards: "auto", //1700+ servers
-    intents: [
-        GatewayIntentBits.Guilds
-        // Intents.FLAGS.GUILD_VOICE_STATES
-    ]
-})
-//Login to the Bot
-client.login("OTYyNDQ4MDkxOTY4MDY5NjYy.GDePI_.jppqe1s99RkyCJcYzlpBEAvwUcAT3XC1izkjN8");
-//an array of all channels can be a database output too!
-const Channels = ["1003196564518481960"];
-//Once the bot is ready join all channels and play the audio
-client.on("ready", async () => {
-    for(const channelId of Channels){
-        joinChannel(channelId);
-        //wait 500ms        
-        await new Promise(res => setTimeout(() => res(2), 500))
+  shards: "auto", //1700+ servers
+  intents: [Intents.FLAGS.GUILDS, Intents.FLAGS.GUILD_VOICE_STATES],
+});
+
+client.slashcommands = new Collection();
+client.player = new Player(client, {
+  ytdlOptions: {
+    quality: "highestaudio",
+    highWaterMark: 1 << 25,
+  },
+});
+
+let commands = [];
+
+const slashFiles = fs
+  .readdirSync("./slash")
+  .filter((file) => file.endsWith(".js"));
+for (const file of slashFiles) {
+  const slashcmd = require(`./slash/${file}`);
+  client.slashcommands.set(slashcmd.data.name, slashcmd);
+  if (LOAD_SLASH) commands.push(slashcmd.data.toJSON());
+}
+
+if (LOAD_SLASH) {
+  const rest = new REST({ version: "9" }).setToken(TOKEN);
+  console.log("Deploying slash commands");
+  rest
+    .put(Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID), {
+      body: commands,
+    })
+    .then(() => {
+      console.log("Successfully loaded");
+      process.exit(0);
+    })
+    .catch((err) => {
+      if (err) {
+        console.log(err);
+        process.exit(1);
+      }
+    });
+} else {
+  client.on("ready", () => {
+    console.log(`Logged in as ${client.user.tag}`);
+  });
+  client.on("interactionCreate", (interaction) => {
+    async function handleCommand() {
+      if (!interaction.isCommand()) return;
+
+      const slashcmd = client.slashcommands.get(interaction.commandName);
+      if (!slashcmd) interaction.reply("Not a valid slash command");
+
+      await interaction.deferReply();
+      await slashcmd.run({ client, interaction });
     }
-
-    function joinChannel(channelId) {
-        client.channels.fetch(channelId).then(channel => {
-            //JOIN THE VC AND PLAY AUDIO
-            const VoiceConnection = joinVoiceChannel({
-                channelId: channel.id,
-                guildId: channel.guild.id,
-                adapterCreator: channel.guild.voiceAdapterCreator
-            });
-            //use a: direct mp3 link / file / const ytdl = require("ytdl-core"); ytdl("https://youtu.be/dQw4w9WgXcQ")
-
-
-            // const resource = createAudioResource("https://streams.ilovemusic.de/iloveradio109.mp3", {
-            //     inlineVolume: true
-            // });
-
-            const resource = createAudioResource(ytdl("https://youtu.be/R-NbhGTVRG0", {
-                highWaterMark: 1024 * 1024 * 64,
-                quality: "highestaudio"
-            }), {
-                inlineVolume: true
-            });
-
-            // set volume
-            resource.volume.setVolume(0.5);
-            const player = createAudioPlayer()
-            VoiceConnection.subscribe(player);
-            player.play(resource);
-            player.on("idle", () => {
-                try{
-                    player.stop()
-                } catch (e) { }
-                try{
-                    VoiceConnection.destroy()
-                } catch (e) { }
-                joinChannel(channel.id)
-            })
-        }).catch(console.error)
-    }
-})
-
-client.on("voiceStateUpdate", async (oldState, newState) => {
-    if(newState.channelId && newState.channel.type === "GUILD_STAGE_VOICE" && newState.guild.me.voice.suppress) {
-        try{
-            await newState.guild.me.voice.setSuppressed(false)
-        }catch (e) {
-
-        }
-    }
-})
+    handleCommand();
+  });
+  client.login(TOKEN);
+}
